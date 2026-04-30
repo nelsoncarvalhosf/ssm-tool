@@ -1,6 +1,6 @@
 {
   "name": "ssm-tool",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "CLI para gerenciar conexões AWS SSM de forma simples",
   "bin": {
     "ssm": "bin/ssm.js"
