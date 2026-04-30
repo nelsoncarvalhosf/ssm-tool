@@ -3,10 +3,15 @@
   "version": "0.1.0",
   "description": "CLI para gerenciar conexões AWS SSM de forma simples",
   "bin": {
-    "ssm": "./bin/ssm.js"
+    "ssm": "bin/ssm.js"
   },
   "type": "module",
-  "keywords": ["aws", "ssm", "cli", "devops"],
+  "keywords": [
+    "aws",
+    "ssm",
+    "cli",
+    "devops"
+  ],
   "author": "Nelson Carvalho",
   "license": "MIT"
 }
