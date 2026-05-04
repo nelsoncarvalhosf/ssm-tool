@@ -5,9 +5,32 @@ import YAML from "yaml";
 import inquirer from "inquirer";
 import { execa } from "execa";
 
+async function resolveAwsCli() {
+  const candidates = ["aws", "/usr/local/bin/aws", "/opt/homebrew/bin/aws"];
+
+  for (const candidate of candidates) {
+    try {
+      await execa(candidate, ["--version"]);
+      return candidate;
+    } catch {}
+  }
+
+  return null;
+}
+
 export async function init() {
   const configDir = path.join(os.homedir(), ".ssm-tool");
   const configFile = path.join(configDir, "config.yaml");
+
+  const awsCli = await resolveAwsCli();
+
+  if (!awsCli) {
+    console.log("");
+    console.log("⚠️ AWS CLI não encontrado.");
+    console.log("Rode:");
+    console.log("  ssm doctor");
+    return;
+  }
 
   const { profile } = await inquirer.prompt([
     {
@@ -19,21 +42,19 @@ export async function init() {
 
   await fs.ensureDir(configDir);
 
-  // 🔍 verifica se profile já existe
   let profileExists = true;
 
   try {
-    await execa("/usr/local/bin/aws", [
+    await execa(awsCli, [
       "configure",
       "list",
       "--profile",
       profile
     ]);
-  } catch (e) {
+  } catch {
     profileExists = false;
   }
 
-  // 🚀 se não existir → configurar SSO
   if (!profileExists) {
     console.log("");
     console.log(`🔐 Profile "${profile}" não encontrado.`);
@@ -41,13 +62,12 @@ export async function init() {
     console.log("");
 
     await execa(
-      "/usr/local/bin/aws",
+      awsCli,
       ["configure", "sso", "--profile", profile],
       { stdio: "inherit" }
     );
   }
 
-  // ⚠️ não sobrescrever config existente
   if (await fs.pathExists(configFile)) {
     console.log("");
     console.log("⚠️ Config já existe:");

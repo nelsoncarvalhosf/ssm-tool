@@ -5,6 +5,75 @@ import YAML from "yaml";
 import inquirer from "inquirer";
 import { execa } from "execa";
 
+async function resolveAwsCli() {
+  const candidates = ["aws", "/usr/local/bin/aws", "/opt/homebrew/bin/aws"];
+
+  for (const candidate of candidates) {
+    try {
+      await execa(candidate, ["--version"]);
+      return candidate;
+    } catch {}
+  }
+
+  throw new Error("AWS CLI não encontrado. Rode: ssm doctor");
+}
+
+async function ensureSSOSession(awsCli, profile) {
+  try {
+    await execa(
+      awsCli,
+      ["sts", "get-caller-identity", "--profile", profile],
+      { stdio: "ignore" }
+    );
+  } catch {
+    console.log("");
+    console.log("🔐 Sessão SSO inválida ou expirada. Fazendo login...");
+    console.log("");
+
+    await execa(
+      awsCli,
+      ["sso", "login", "--profile", profile],
+      { stdio: "inherit" }
+    );
+
+    console.log("");
+  }
+}
+
+async function runAwsCommand(awsCli, args, profile) {
+  try {
+    await execa(awsCli, args, { stdio: "inherit" });
+  } catch (error) {
+    const output = `${error.stderr || ""}\n${error.stdout || ""}\n${error.message || ""}`;
+
+    const isExpiredSession =
+      output.includes("Token has expired") ||
+      output.includes("refresh failed") ||
+      output.includes("UnauthorizedException");
+
+    if (isExpiredSession) {
+      console.log("");
+      console.log("🔐 Sessão SSO expirada. Fazendo login...");
+      console.log("");
+
+      await execa(
+        awsCli,
+        ["sso", "login", "--profile", profile],
+        { stdio: "inherit" }
+      );
+
+      console.log("");
+      console.log("🔁 Tentando novamente...");
+      console.log("");
+
+      await execa(awsCli, args, { stdio: "inherit" });
+      return;
+    }
+
+    throw error;
+  }
+}
+
 export async function connect(options = {}) {
   const configFile = path.join(os.homedir(), ".ssm-tool", "config.yaml");
 
@@ -22,13 +91,15 @@ export async function connect(options = {}) {
     return;
   }
 
+  const awsCli = await resolveAwsCli();
+
   const { selectedServer } = await inquirer.prompt([
     {
       type: "rawlist",
       name: "selectedServer",
       message: "Escolha o servidor:",
       choices: servers.map((server) => ({
-        name: `${server.name} (${server.region})`,
+        name: `${server.name} (${server.region || config.defaultRegion || "us-east-1"})`,
         value: server
       }))
     }
@@ -39,18 +110,26 @@ export async function connect(options = {}) {
   const target = selectedServer.instanceId;
   const startPath = selectedServer.path || "/var/www";
 
+  if (!target) {
+    console.log("⚠️ Servidor sem Instance ID configurado.");
+    return;
+  }
+
   if (options.tunnel) {
     const remotePort = selectedServer.db?.remotePort || 3306;
     const localPort = selectedServer.db?.localPort || config.defaultLocalDbPort || 13306;
+
+    await ensureSSOSession(awsCli, profile);
 
     console.log("");
     console.log(`🗄️ Abrindo túnel para: ${selectedServer.name}`);
     console.log(`Host: 127.0.0.1`);
     console.log(`Porta: ${localPort}`);
+    console.log(`Remoto: ${remotePort}`);
     console.log("");
 
-    await execa(
-      "/usr/local/bin/aws",
+    await runAwsCommand(
+      awsCli,
       [
         "ssm",
         "start-session",
@@ -68,7 +147,7 @@ export async function connect(options = {}) {
           localPortNumber: [String(localPort)]
         })
       ],
-      { stdio: "inherit" }
+      profile
     );
 
     return;
@@ -80,12 +159,14 @@ export async function connect(options = {}) {
     ? `sudo su - -c "cd ${startPath} && exec bash"`
     : `cd ${startPath} && exec bash`;
 
+  await ensureSSOSession(awsCli, profile);
+
   console.log("");
   console.log(`🚀 Conectando em: ${selectedServer.name}`);
   console.log("");
 
-  await execa(
-    "/usr/local/bin/aws",
+  await runAwsCommand(
+    awsCli,
     [
       "ssm",
       "start-session",
@@ -100,6 +181,6 @@ export async function connect(options = {}) {
       "--parameters",
       JSON.stringify({ command: [command] })
     ],
-    { stdio: "inherit" }
+    profile
   );
 }
