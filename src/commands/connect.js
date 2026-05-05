@@ -40,18 +40,32 @@ async function ensureSSOSession(awsCli, profile) {
   }
 }
 
+function getErrorOutput(error) {
+  return `${error.stderr || ""}\n${error.stdout || ""}\n${error.message || ""}`;
+}
+
+function isExpiredSession(output) {
+  return (
+    output.includes("Token has expired") ||
+    output.includes("refresh failed") ||
+    output.includes("UnauthorizedException")
+  );
+}
+
+function isInteractiveCommandDenied(output) {
+  return (
+    output.includes("AccessDeniedException") &&
+    output.includes("AWS-StartInteractiveCommand")
+  );
+}
+
 async function runAwsCommand(awsCli, args, profile) {
   try {
     await execa(awsCli, args, { stdio: "inherit" });
   } catch (error) {
-    const output = `${error.stderr || ""}\n${error.stdout || ""}\n${error.message || ""}`;
+    const output = getErrorOutput(error);
 
-    const isExpiredSession =
-      output.includes("Token has expired") ||
-      output.includes("refresh failed") ||
-      output.includes("UnauthorizedException");
-
-    if (isExpiredSession) {
+    if (isExpiredSession(output)) {
       console.log("");
       console.log("🔐 Sessão SSO expirada. Fazendo login...");
       console.log("");
@@ -67,6 +81,73 @@ async function runAwsCommand(awsCli, args, profile) {
       console.log("");
 
       await execa(awsCli, args, { stdio: "inherit" });
+      return;
+    }
+
+    throw error;
+  }
+}
+
+async function startDefaultSession({ awsCli, profile, region, target }) {
+  console.log("");
+  console.log("➡️ Abrindo sessão padrão do SSM...");
+  console.log("");
+
+  await runAwsCommand(
+    awsCli,
+    [
+      "ssm",
+      "start-session",
+      "--profile",
+      profile,
+      "--region",
+      region,
+      "--target",
+      target
+    ],
+    profile
+  );
+}
+
+async function startAdvancedSession({
+  awsCli,
+  profile,
+  region,
+  target,
+  command
+}) {
+  try {
+    await runAwsCommand(
+      awsCli,
+      [
+        "ssm",
+        "start-session",
+        "--profile",
+        profile,
+        "--region",
+        region,
+        "--target",
+        target,
+        "--document-name",
+        "AWS-StartInteractiveCommand",
+        "--parameters",
+        JSON.stringify({ command: [command] })
+      ],
+      profile
+    );
+  } catch (error) {
+    const output = getErrorOutput(error);
+
+    if (isInteractiveCommandDenied(output)) {
+      console.log("");
+      console.log("⚠️ Sem permissão para AWS-StartInteractiveCommand.");
+      console.log("   O CLI vai conectar em modo básico.");
+      console.log("   Depois de entrar, rode manualmente:");
+      console.log("   sudo su");
+      console.log("   cd /var/www");
+      console.log("");
+
+      await startDefaultSession({ awsCli, profile, region, target });
       return;
     }
 
@@ -115,15 +196,16 @@ export async function connect(options = {}) {
     return;
   }
 
+  await ensureSSOSession(awsCli, profile);
+
   if (options.tunnel) {
     const remotePort = selectedServer.db?.remotePort || 3306;
-    const localPort = selectedServer.db?.localPort || config.defaultLocalDbPort || 13306;
-
-    await ensureSSOSession(awsCli, profile);
+    const localPort =
+      selectedServer.db?.localPort || config.defaultLocalDbPort || 13306;
 
     console.log("");
     console.log(`🗄️ Abrindo túnel para: ${selectedServer.name}`);
-    console.log(`Host: 127.0.0.1`);
+    console.log("Host: 127.0.0.1");
     console.log(`Porta: ${localPort}`);
     console.log(`Remoto: ${remotePort}`);
     console.log("");
@@ -159,28 +241,15 @@ export async function connect(options = {}) {
     ? `sudo su - -c "cd ${startPath} && exec bash"`
     : `cd ${startPath} && exec bash`;
 
-  await ensureSSOSession(awsCli, profile);
-
   console.log("");
   console.log(`🚀 Conectando em: ${selectedServer.name}`);
   console.log("");
 
-  await runAwsCommand(
+  await startAdvancedSession({
     awsCli,
-    [
-      "ssm",
-      "start-session",
-      "--profile",
-      profile,
-      "--region",
-      region,
-      "--target",
-      target,
-      "--document-name",
-      "AWS-StartInteractiveCommand",
-      "--parameters",
-      JSON.stringify({ command: [command] })
-    ],
-    profile
-  );
+    profile,
+    region,
+    target,
+    command
+  });
 }
