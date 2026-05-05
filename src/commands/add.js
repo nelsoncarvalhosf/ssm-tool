@@ -53,6 +53,12 @@ export async function add() {
     },
     {
       type: "confirm",
+      name: "advancedCommand",
+      message: "Usar comando avançado (sudo + path automático)?",
+      default: true
+    },
+    {
+      type: "confirm",
       name: "enableDbTunnel",
       message: "Configurar túnel de banco?",
       default: true
@@ -87,7 +93,8 @@ export async function add() {
     instanceId: answers.instanceId,
     region: answers.region,
     path: answers.path || "/var/www",
-    useSudo: answers.useSudo
+    useSudo: answers.useSudo,
+    advancedCommand: answers.advancedCommand
   };
 
   if (answers.enableDbTunnel) {

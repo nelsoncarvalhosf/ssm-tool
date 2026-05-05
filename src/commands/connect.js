@@ -5,6 +5,9 @@ import YAML from "yaml";
 import inquirer from "inquirer";
 import { execa } from "execa";
 
+/**
+ * Resolve AWS CLI em qualquer OS
+ */
 async function resolveAwsCli() {
   const candidates = ["aws", "/usr/local/bin/aws", "/opt/homebrew/bin/aws"];
 
@@ -18,6 +21,9 @@ async function resolveAwsCli() {
   throw new Error("AWS CLI não encontrado. Rode: ssm doctor");
 }
 
+/**
+ * Garante sessão SSO válida
+ */
 async function ensureSSOSession(awsCli, profile) {
   try {
     await execa(
@@ -44,56 +50,22 @@ function getErrorOutput(error) {
   return `${error.stderr || ""}\n${error.stdout || ""}\n${error.message || ""}`;
 }
 
-function isExpiredSession(output) {
-  return (
-    output.includes("Token has expired") ||
-    output.includes("refresh failed") ||
-    output.includes("UnauthorizedException")
-  );
-}
-
-function isInteractiveCommandDenied(output) {
+function isInteractiveDenied(output) {
   return (
     output.includes("AccessDeniedException") &&
     output.includes("AWS-StartInteractiveCommand")
   );
 }
 
-async function runAwsCommand(awsCli, args, profile) {
-  try {
-    await execa(awsCli, args, { stdio: "inherit" });
-  } catch (error) {
-    const output = getErrorOutput(error);
-
-    if (isExpiredSession(output)) {
-      console.log("");
-      console.log("🔐 Sessão SSO expirada. Fazendo login...");
-      console.log("");
-
-      await execa(
-        awsCli,
-        ["sso", "login", "--profile", profile],
-        { stdio: "inherit" }
-      );
-
-      console.log("");
-      console.log("🔁 Tentando novamente...");
-      console.log("");
-
-      await execa(awsCli, args, { stdio: "inherit" });
-      return;
-    }
-
-    throw error;
-  }
-}
-
+/**
+ * Sessão padrão (sempre funciona)
+ */
 async function startDefaultSession({ awsCli, profile, region, target }) {
   console.log("");
   console.log("➡️ Abrindo sessão padrão do SSM...");
   console.log("");
 
-  await runAwsCommand(
+  await execa(
     awsCli,
     [
       "ssm",
@@ -105,10 +77,13 @@ async function startDefaultSession({ awsCli, profile, region, target }) {
       "--target",
       target
     ],
-    profile
+    { stdio: "inherit" }
   );
 }
 
+/**
+ * Sessão avançada (com sudo + path)
+ */
 async function startAdvancedSession({
   awsCli,
   profile,
@@ -117,7 +92,7 @@ async function startAdvancedSession({
   command
 }) {
   try {
-    await runAwsCommand(
+    await execa(
       awsCli,
       [
         "ssm",
@@ -133,16 +108,17 @@ async function startAdvancedSession({
         "--parameters",
         JSON.stringify({ command: [command] })
       ],
-      profile
+      { stdio: "inherit" }
     );
   } catch (error) {
     const output = getErrorOutput(error);
 
-    if (isInteractiveCommandDenied(output)) {
+    if (isInteractiveDenied(output)) {
       console.log("");
-      console.log("⚠️ Sem permissão para AWS-StartInteractiveCommand.");
-      console.log("   O CLI vai conectar em modo básico.");
-      console.log("   Depois de entrar, rode manualmente:");
+      console.log("⚠️ Sem permissão para comando avançado.");
+      console.log("➡️ Conectando em modo básico...");
+      console.log("");
+      console.log("👉 Depois rode:");
       console.log("   sudo su");
       console.log("   cd /var/www");
       console.log("");
@@ -155,6 +131,9 @@ async function startAdvancedSession({
   }
 }
 
+/**
+ * CONNECT PRINCIPAL
+ */
 export async function connect(options = {}) {
   const configFile = path.join(os.homedir(), ".ssm-tool", "config.yaml");
 
@@ -192,25 +171,27 @@ export async function connect(options = {}) {
   const startPath = selectedServer.path || "/var/www";
 
   if (!target) {
-    console.log("⚠️ Servidor sem Instance ID configurado.");
+    console.log("⚠️ Servidor sem Instance ID.");
     return;
   }
 
   await ensureSSOSession(awsCli, profile);
 
+  /**
+   * 🔹 TÚNEL DB
+   */
   if (options.tunnel) {
     const remotePort = selectedServer.db?.remotePort || 3306;
     const localPort =
       selectedServer.db?.localPort || config.defaultLocalDbPort || 13306;
 
     console.log("");
-    console.log(`🗄️ Abrindo túnel para: ${selectedServer.name}`);
-    console.log("Host: 127.0.0.1");
-    console.log(`Porta: ${localPort}`);
+    console.log(`🗄️ Túnel DB: ${selectedServer.name}`);
+    console.log(`Local: 127.0.0.1:${localPort}`);
     console.log(`Remoto: ${remotePort}`);
     console.log("");
 
-    await runAwsCommand(
+    await execa(
       awsCli,
       [
         "ssm",
@@ -229,12 +210,16 @@ export async function connect(options = {}) {
           localPortNumber: [String(localPort)]
         })
       ],
-      profile
+      { stdio: "inherit" }
     );
 
     return;
   }
 
+  /**
+   * 🔹 CONEXÃO NORMAL
+   */
+  const useAdvanced = selectedServer.advancedCommand !== false;
   const useSudo = selectedServer.useSudo !== false;
 
   const command = useSudo
@@ -244,6 +229,11 @@ export async function connect(options = {}) {
   console.log("");
   console.log(`🚀 Conectando em: ${selectedServer.name}`);
   console.log("");
+
+  if (!useAdvanced) {
+    await startDefaultSession({ awsCli, profile, region, target });
+    return;
+  }
 
   await startAdvancedSession({
     awsCli,

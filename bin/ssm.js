@@ -50,4 +50,7 @@ program
   .description("Verificar ambiente")
   .action(doctor);
 
+program
+  .action(connect);  
+
 program.parse();
